@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCANNER AGUILA CRIPTO — SMC Strong High/Low</title>
+<!--
+  Version WEB estatica del Scanner Aguila Cripto.
+  El escaneo lo hace TU NAVEGADOR contra APIs publicas con CORS:
+    1) Binance Futures   2) Bybit (linear)
+  (LBank no permite llamadas desde navegador)
+  Misma logica SMC del indicador CONFLUENCE v3.3:
+    leg(50) -> pivotes swing -> BOS/CHoCH -> Strong High / Strong Low
+    % 0 = extremo Discount ... 100 = extremo Premium ; Equilibrium excluido
+  Funciona con doble click local o subida a GitHub Pages / Netlify.
+-->
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --borde:#30363d; --texto:#e6edf3;
+          --gris:#8b949e; --rojo:#f85149; --verde:#3fb950; --ambar:#d29922; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--texto);
+         font-family:'Segoe UI',system-ui,sans-serif; padding:16px; }
+  h1 { font-size:20px; letter-spacing:1px; }
+  h1 .aguila { color:var(--ambar); }
+  .sub { color:var(--gris); font-size:12px; margin:6px 0 14px; }
+  .estado { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px;
+            font-size:13px; color:var(--gris); align-items:center; }
+  .estado b { color:var(--texto); }
+  button { background:#238636; color:#fff; border:none; border-radius:6px;
+           padding:7px 16px; font-weight:700; cursor:pointer; font-size:13px; }
+  button:disabled { background:#30363d; cursor:wait; }
+  .grupo { background:var(--panel); border:1px solid var(--borde);
+           border-radius:10px; margin-bottom:18px; overflow:hidden; }
+  .grupo-titulo { padding:11px 14px; font-weight:700; font-size:14px;
+                  border-bottom:1px solid var(--borde); }
+  .grupo-titulo small { color:var(--gris); font-weight:400; display:block; font-size:11px; }
+  .sh .grupo-titulo { color:var(--rojo); }
+  .sl .grupo-titulo { color:var(--verde); }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; min-width:640px; }
+  th { text-align:left; padding:7px 12px; color:var(--gris); font-size:10px;
+       text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--borde); }
+  td { padding:8px 12px; border-bottom:1px solid #21262d; white-space:nowrap; }
+  tr:last-child td { border-bottom:none; }
+  .sym { font-weight:700; }
+  .fuente { color:var(--gris); font-size:11px; }
+  .zona { padding:2px 9px; border-radius:20px; font-size:10px; font-weight:700; }
+  .zona.PREMIUM { background:rgba(248,81,73,.15); color:var(--rojo); }
+  .zona.DISCOUNT { background:rgba(63,185,80,.15); color:var(--verde); }
+  .barra { position:relative; height:12px; width:170px; border-radius:6px;
+           background:linear-gradient(90deg,#238636 0%,#238636 44%,
+             #6e7681 47.5%,#6e7681 52.5%,#da3633 56%,#da3633 100%); opacity:.92; }
+  .marca { position:absolute; top:-3px; width:4px; height:18px; background:#fff;
+           border-radius:2px; box-shadow:0 0 5px #000; }
+  .pct { font-weight:700; }
+  .pie { color:var(--gris); font-size:12px; margin-top:8px; line-height:1.8; }
+  .chip { display:inline-block; background:#21262d; border:1px solid var(--borde);
+          border-radius:6px; padding:1px 8px; margin:2px 3px; font-size:11px; }
+  .vacio { padding:14px; color:var(--gris); font-style:italic; font-size:13px; }
+</style>
+</head>
+<body>
+<h1><span class="aguila">&#129413;</span> SCANNER AGUILA CRIPTO — WEB</h1>
+<div class="sub">SMC CONFLUENCE v3.3 &middot; 15m &middot; 0% = Discount extremo | 100% = Premium extremo &middot; Equilibrium excluido &middot; Datos: Binance Futures / Bybit</div>
+<div class="estado">
+  <button id="btn" onclick="escanear()">Escanear ahora</button>
+  <span>&Uacute;ltimo: <b id="ultimo">-</b></span>
+  <span id="prog" style="color:var(--ambar)"></span>
+</div>
+
+<div class="grupo sh">
+  <div class="grupo-titulo">&#9650; STRONG HIGH <small>estructura bajista &mdash; el m&aacute;ximo aguanta (liquidez frenada arriba)</small></div>
+  <div class="scroll" id="tabla-sh"><div class="vacio">Pulsa &quot;Escanear ahora&quot;...</div></div>
+</div>
+
+<div class="grupo sl">
+  <div class="grupo-titulo">&#9660; STRONG LOW <small>estructura alcista &mdash; el m&iacute;nimo aguanta (liquidez frenada abajo)</small></div>
+  <div class="scroll" id="tabla-sl"></div>
+</div>
+
+<div class="pie" id="pie"></div>
+
+<script>
+"use strict";
+// ----------------------- CONFIG -----------------------
+var ACTIVOS = ["IOUSDT","ZECUSDT","JTOUSDT","GMXUSDT","STRKUSDT","PENDLEUSDT","APTUSDT","HNTUSDT","ENAUSDT","KASUSDT","XTIUSDT","IMXUSDT","BCHUSDT","EIGENUSDT","ETHUSDT","XAUTUSDT","UNIUSDT","AAVEUSDT","XLMUSDT","STXUSDT","TRXUSDT","XRPUSDT","BTCUSDT","SILVERUSDT","SNXUSDT","MNTUSDT","LDOUSDT","DOTUSDT","ZROUSDT","SCRUSDT","LINKUSDT","VIRTUALUSDT","RUNEUSDT","GRTUSDT","AEROUSDT","BNBUSDT","ONDOUSDT","FLOWUSDT","FLOKIUSDT","HYPEUSDT","AXSUSDT","SUIUSDT","WIFUSDT","CRVUSDT","INJUSDT","CHZUSDT","PENGUUSDT","MINAUSDT","DOGEUSDT","GRASSUSDT","LTCUSDT","MEUSDT","ARBUSDT","THETAUSDT","BONKUSDT","PYTHUSDT","ATOMUSDT","TIAUSDT","ASTRUSDT","EGLDUSDT","GALAUSDT","FARTCOINUSDT","RENDERUSDT","FILUSDT","PEPEUSDT","FETUSDT","SHIBUSDT","AVAXUSDT","MANAUSDT","ARUSDT","ETCUSDT","BRETTUSDT","ADAUSDT","NEARUSDT","DRIFTUSDT","VETUSDT","TAOUSDT","POPCATUSDT","OPUSDT","SATSUSDT","SANDUSDT","JUPUSDT","DYDXUSDT","BOMEUSDT","SEIUSDT","NEOUSDT","IOTAUSDT","ORDIUSDT","TURBOUSDT","ALGOUSDT"];
+var TF = "15";            // minutos
+var N_VELAS = 1000;
+var SWING_LEN = 50;
+var EQ_BANDA = 5.0;       // equilibrium 47.5% .. 52.5%
+var AUTO_MIN = 5;         // re-escaneo automatico (minutos)
+var CONCURRENCIA = 6;
+
+// ----------------------- FUENTES (CORS OK) -----------------------
+async function jget(url){
+  try{
+    var r = await fetch(url);
+    if(!r.ok) return null;
+    return await r.json();
+  }catch(e){ return null; }
+}
+async function klinesBinance(sym){
+  var candidatos = [sym, "1000"+sym];
+  for(var i=0;i<candidatos.length;i++){
+    var s = candidatos[i];
+    var d = await jget("https://fapi.binance.com/fapi/v1/klines?symbol="+s+"&interval="+TF+"m&limit="+N_VELAS);
+    if(Array.isArray(d) && d.length >= SWING_LEN+30){
+      var esc = s.indexOf("1000")===0 ? 1000 : 1;
+      return { velas: d.map(function(r){ return {h:+r[2]/esc, l:+r[3]/esc, c:+r[4]/esc}; }),
+               fuente: "Binance"+(esc>1?" (1000x)":"") };
+    }
+  }
+  return null;
+}
+async function klinesBybit(sym){
+  var candidatos = [sym, "1000"+sym];
+  for(var i=0;i<candidatos.length;i++){
+    var s = candidatos[i];
+    var d = await jget("https://api.bybit.com/v5/market/kline?category=linear&symbol="+s+"&interval="+TF+"&limit="+N_VELAS);
+    var lista = d && d.result && d.result.list;
+    if(lista && lista.length >= SWING_LEN+30){
+      var esc = s.indexOf("1000")===0 ? 1000 : 1;
+      var velas = lista.map(function(r){ return {t:+r[0], h:+r[2]/esc, l:+r[3]/esc, c:+r[4]/esc}; });
+      velas.sort(function(a,b){ return a.t-b.t; });
+      return { velas: velas, fuente: "Bybit"+(esc>1?" (1000x)":"") };
+    }
+  }
+  return null;
+}
+async function obtenerVelas(sym){
+  return (await klinesBinance(sym)) || (await klinesBybit(sym));
+}
+async function volumenes(){
+  var vols = {};
+  var by = await jget("https://api.bybit.com/v5/market/tickers?category=linear");
+  if(by && by.result && by.result.list){
+    by.result.list.forEach(function(t){ vols[t.symbol.replace(/^1000/,"")] = +t.turnover24h || 0; });
+  }
+  var bn = await jget("https://fapi.binance.com/fapi/v1/ticker/24hr");
+  if(Array.isArray(bn)){
+    bn.forEach(function(t){ vols[t.symbol.replace(/^1000/,"")] = +t.quoteVolume || 0; });
+  }
+  return vols;
+}
+
+// ----------------------- MOTOR SMC (identico al Pine) -----------------------
+function analizarSMC(velas){
+  var n = velas.length;
+  if(n < SWING_LEN + 10) return null;
+  var leg = 0, bias = 0, top = null, bot = null;
+  var swingHigh = null, swingLow = null;
+  for(var i=0;i<n;i++){
+    if(top !== null) top = Math.max(top, velas[i].h);
+    if(bot !== null) bot = Math.min(bot, velas[i].l);
+    if(i >= SWING_LEN){
+      var masAlto = -Infinity, masBajo = Infinity;
+      for(var j=i-SWING_LEN+1;j<=i;j++){
+        if(velas[j].h > masAlto) masAlto = velas[j].h;
+        if(velas[j].l < masBajo) masBajo = velas[j].l;
+      }
+      var nuevoLeg = leg;
+      if(velas[i-SWING_LEN].h > masAlto) nuevoLeg = -1;
+      else if(velas[i-SWING_LEN].l < masBajo) nuevoLeg = 1;
+      if(nuevoLeg !== leg){
+        if(nuevoLeg === -1){ swingHigh = {nivel: velas[i-SWING_LEN].h, crossed:false}; top = swingHigh.nivel; }
+        else { swingLow = {nivel: velas[i-SWING_LEN].l, crossed:false}; bot = swingLow.nivel; }
+        leg = nuevoLeg;
+      }
+    }
+    var c = velas[i].c, pc = i>0 ? velas[i-1].c : c;
+    if(swingHigh && !swingHigh.crossed && pc <= swingHigh.nivel && swingHigh.nivel < c){
+      swingHigh.crossed = true; bias = 1;
+    }
+    if(swingLow && !swingLow.crossed && pc >= swingLow.nivel && swingLow.nivel > c){
+      swingLow.crossed = true; bias = -1;
+    }
+  }
+  if(top === null || bot === null || top <= bot) return null;
+  var precio = velas[n-1].c;
+  var pct = Math.max(0, Math.min(100, (precio-bot)/(top-bot)*100));
+  var zona = pct >= 50+EQ_BANDA/2 ? "PREMIUM" : (pct <= 50-EQ_BANDA/2 ? "DISCOUNT" : "EQUILIBRIUM");
+  var cond = bias === -1 ? "STRONG HIGH" : (bias === 1 ? "STRONG LOW" : null);
+  return { condicion:cond, zona:zona, pct:pct, precio:precio };
+}
+
+// ----------------------- ESCANEO -----------------------
+var escaneando = false;
+async function escanear(){
+  if(escaneando) return;
+  escaneando = true;
+  document.getElementById("btn").disabled = true;
+  var prog = document.getElementById("prog");
+  prog.textContent = "Descargando volumenes...";
+  var vols = await volumenes();
+  var resultados = [], hechos = 0, idx = 0;
+
+  async function trabajador(){
+    while(idx < ACTIVOS.length){
+      var sym = ACTIVOS[idx++];
+      var datos = await obtenerVelas(sym);
+      var r;
+      if(!datos) r = {sym:sym, error:true};
+      else {
+        var a = analizarSMC(datos.velas);
+        r = a ? {sym:sym, fuente:datos.fuente, vol:vols[sym]||0,
+                 condicion:a.condicion, zona:a.zona, pct:a.pct, precio:a.precio}
+              : {sym:sym, neutral:true};
+      }
+      resultados.push(r);
+      hechos++;
+      prog.textContent = "Escaneando "+hechos+"/"+ACTIVOS.length;
+    }
+  }
+  var trabajadores = [];
+  for(var k=0;k<CONCURRENCIA;k++) trabajadores.push(trabajador());
+  await Promise.all(trabajadores);
+
+  render(resultados);
+  document.getElementById("ultimo").textContent = new Date().toLocaleString();
+  prog.textContent = "";
+  document.getElementById("btn").disabled = false;
+  escaneando = false;
+}
+
+// ----------------------- RENDER -----------------------
+function fmtVol(v){
+  if(!v) return "-";
+  if(v>=1e9) return (v/1e9).toFixed(2)+" B";
+  if(v>=1e6) return (v/1e6).toFixed(2)+" M";
+  if(v>=1e3) return (v/1e3).toFixed(1)+" K";
+  return v.toFixed(0);
+}
+function fmtPrecio(p){
+  if(p>=1000) return p.toLocaleString("en-US",{maximumFractionDigits:2});
+  if(p>=1) return p.toFixed(4);
+  return p.toPrecision(4);
+}
+function tabla(filas){
+  if(!filas.length) return '<div class="vacio">Sin activos en esta condici&oacute;n (fuera de equilibrium)</div>';
+  var h = '<table><tr><th>Activo</th><th>Precio</th><th>Zona</th><th>0% &rarr; 100%</th><th>%</th><th>Vol 24h</th><th>Fuente</th></tr>';
+  filas.forEach(function(f){
+    h += '<tr><td class="sym">'+f.sym+'</td>'
+      +  '<td>'+fmtPrecio(f.precio)+'</td>'
+      +  '<td><span class="zona '+f.zona+'">'+f.zona+'</span></td>'
+      +  '<td><div class="barra"><div class="marca" style="left:calc('+f.pct.toFixed(1)+'% - 2px)"></div></div></td>'
+      +  '<td class="pct">'+f.pct.toFixed(1)+'%</td>'
+      +  '<td>'+fmtVol(f.vol)+'</td>'
+      +  '<td class="fuente">'+f.fuente+'</td></tr>';
+  });
+  return h + '</table>';
+}
+function render(resultados){
+  var filas = resultados.filter(function(r){ return !r.error && !r.neutral && r.condicion && r.zona !== "EQUILIBRIUM"; });
+  var sh = filas.filter(function(f){ return f.condicion==="STRONG HIGH"; }).sort(function(a,b){ return b.pct-a.pct; });
+  var sl = filas.filter(function(f){ return f.condicion==="STRONG LOW"; }).sort(function(a,b){ return a.pct-b.pct; });
+  document.getElementById("tabla-sh").innerHTML = tabla(sh);
+  document.getElementById("tabla-sl").innerHTML = tabla(sl);
+  var pie = "";
+  var eq = resultados.filter(function(r){ return !r.error && !r.neutral && r.zona==="EQUILIBRIUM"; });
+  var neu = resultados.filter(function(r){ return r.neutral || (!r.error && !r.condicion && r.zona!=="EQUILIBRIUM"); });
+  var sd = resultados.filter(function(r){ return r.error; });
+  if(eq.length){
+    pie += "<b>En Equilibrium (excluidos, "+eq.length+"):</b> ";
+    eq.forEach(function(e){ pie += '<span class="chip">'+e.sym+' '+e.pct.toFixed(0)+'%</span>'; });
+    pie += "<br>";
+  }
+  if(neu.length){
+    pie += "<b>Sin estructura definida:</b> ";
+    neu.forEach(function(e){ pie += '<span class="chip">'+e.sym+'</span>'; });
+    pie += "<br>";
+  }
+  if(sd.length){
+    pie += "<b>Sin datos de velas:</b> ";
+    sd.forEach(function(e){ pie += '<span class="chip">'+e.sym+'</span>'; });
+  }
+  document.getElementById("pie").innerHTML = pie;
+}
+
+// arranque + auto-refresh
+escanear();
+setInterval(function(){ if(!escaneando) escanear(); }, AUTO_MIN*60*1000);
+</script>
+</body>
+</html>
