@@ -16,6 +16,7 @@
     * WATCH              : sweep pendiente/approaching o score >= 3
   Score 0-5: estructura, zona, SFP confirmado, volumen sweep >=1.5x, tendencia MA50.
   Datos: Binance Futures -> Bybit (CORS OK). Solo velas cerradas.
+  EQUILIBRIUM (47.5%-52.5%) = tierra de nadie: excluido.
 -->
 <style>
   :root { --bg:#0d1117; --panel:#161b22; --borde:#30363d; --texto:#e6edf3;
@@ -109,6 +110,16 @@
   .bajista { color:var(--rojo); }
   .pie { color:var(--gris); font-size:12px; margin-top:10px; line-height:1.7; }
   .vacio { padding:18px; color:var(--gris); font-style:italic; }
+  /* ------- BARRA BTC ------- */
+  .btcbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+            margin:0 0 12px; font-size:12px; }
+  .btcbar .btclbl { font-weight:700; color:var(--texto); }
+  .btcchip { display:inline-flex; gap:5px; align-items:center; border-radius:6px;
+             padding:3px 10px; font-size:11px; font-weight:700;
+             background:#1c2129; border:1px solid var(--borde); color:var(--gris); }
+  .btcchip.up { background:rgba(63,185,80,.12); border-color:rgba(63,185,80,.4); color:var(--verde); }
+  .btcchip.down { background:rgba(248,81,73,.12); border-color:rgba(248,81,73,.4); color:var(--rojo); }
+  .btcchip small { font-weight:400; opacity:.85; }
   @media (max-width: 860px){
     .layout { flex-direction:column; }
     .sidebar { width:100%; min-width:0; border-right:none;
@@ -154,7 +165,9 @@
 
   <div class="main">
     <h1><span class="aguila">&#129413;</span> Aguila Cripto — SMC + SWEEP</h1>
-    <div class="sub">Estructura SMC (Strong High/Low, premium/discount) + barrido de liquidez (SFP) + cruce EMA3/9 + Score 0-5. No es asesoramiento financiero.</div>
+    <div class="sub">Estructura SMC (Strong High/Low, premium/discount) + barrido de liquidez (SFP) + cruce EMA3/9 + Score 0-5. Equilibrium excluido. No es asesoramiento financiero.</div>
+
+    <div class="btcbar" id="btcBar"><span class="btclbl">BTC:</span><span class="btcchip">cargando...</span></div>
 
     <div class="cards">
       <div class="card"><div class="t"><span class="punto" style="background:var(--verde)"></span>A+ Long</div><div class="v" id="nAplong">-</div></div>
@@ -170,7 +183,6 @@
       <span><span class="flabel">Solo setups</span><span class="toggle on" id="fSolo" onclick="toggleSolo()"></span></span>
       <span><span class="flabel">Zona</span>
         <span class="chipf on" data-z="DISCOUNT" onclick="toggleZona(this)">DISCOUNT</span>
-        <span class="chipf on" data-z="EQUILIBRIUM" onclick="toggleZona(this)">EQUILIBRIUM</span>
         <span class="chipf on" data-z="PREMIUM" onclick="toggleZona(this)">PREMIUM</span>
       </span>
       <span><span class="flabel">Score m&iacute;n.</span>
@@ -530,6 +542,37 @@ function analizarActivo(sym,datos,vols){
     emaCls:ema.lado==="ALCISTA"?"alcista":(ema.lado==="BAJISTA"?"bajista":"")};
 }
 
+// ============================ BARRA BTC (tendencia multi-TF) ============================
+function smaUlt(closes,len){
+  if(closes.length<len)return NaN;
+  var s=0;
+  for(var i=closes.length-len;i<closes.length;i++)s+=closes[i];
+  return s/len;
+}
+function emaUlt(closes,len){
+  var serie=emaSerie(closes,len);
+  return serie[serie.length-1];
+}
+async function barraBTC(){
+  var defs=[
+    {tf:"240", lbl:"H4",  tipo:"SMA", r:50, l:200},
+    {tf:"60",  lbl:"H1",  tipo:"EMA", r:21, l:50},
+    {tf:"15",  lbl:"M15", tipo:"EMA", r:9,  l:21}
+  ];
+  var chips=await Promise.all(defs.map(async function(d){
+    var datos=await klinesBinance("BTCUSDT", d.tf, 260);
+    if(!datos)return '<span class="btcchip">'+d.lbl+' <small>sin datos</small></span>';
+    var closes=datos.velas.map(function(v){return v.c;});
+    var rapida=d.tipo==="SMA"?smaUlt(closes,d.r):emaUlt(closes,d.r);
+    var lenta =d.tipo==="SMA"?smaUlt(closes,d.l):emaUlt(closes,d.l);
+    if(isNaN(rapida)||isNaN(lenta))return '<span class="btcchip">'+d.lbl+' <small>sin datos</small></span>';
+    var up=rapida>lenta;
+    return '<span class="btcchip '+(up?"up":"down")+'">'+d.lbl+' '+(up?"&#9650;":"&#9660;")
+         +' <small>'+d.tipo+d.r+'/'+d.l+'</small></span>';
+  }));
+  document.getElementById("btcBar").innerHTML='<span class="btclbl">BTC:</span>'+chips.join("");
+}
+
 // ============================ ESCANEO / UI ============================
 var RESULTADOS=[],SIN_DATOS=[],escaneando=false;
 var PRIORIDAD={APLONG:0,APSHORT:1,EMALONG:2,EMASHORT:3,WATCH:4,NONE:5};
@@ -611,9 +654,13 @@ function render(){
   var minScore=+document.getElementById("fScore").value;
   var q=document.getElementById("fbuscar").value.trim().toUpperCase();
 
+  // EQUILIBRIUM = tierra de nadie: excluido siempre
+  var VISIBLES=RESULTADOS.filter(function(r){ return r.zona!=="EQUILIBRIUM"; });
+  var nEq=RESULTADOS.length-VISIBLES.length;
+
   // tarjetas (sobre el total, sin filtros)
   var nAL=0,nAS=0,nEma=0,nW=0,nD=0;
-  RESULTADOS.forEach(function(r){
+  VISIBLES.forEach(function(r){
     if(r.setupCls==="APLONG")nAL++;
     else if(r.setupCls==="APSHORT")nAS++;
     else if(r.setupCls==="EMALONG"||r.setupCls==="EMASHORT")nEma++;
@@ -627,7 +674,7 @@ function render(){
   document.getElementById("nDisc").textContent=nD;
   document.getElementById("nTotal").textContent=RESULTADOS.length+SIN_DATOS.length;
 
-  var filas=RESULTADOS.filter(function(r){
+  var filas=VISIBLES.filter(function(r){
     if(solo&&r.setupCls==="NONE")return false;
     if(!zonas[r.zona])return false;
     if(r.score<minScore)return false;
@@ -664,16 +711,18 @@ function render(){
     el.innerHTML=h+'</table>';
   }
   var pie="";
+  if(nEq>0) pie+="<b>En Equilibrium (tierra de nadie, excluidos):</b> "+nEq+" activos<br>";
   if(SIN_DATOS.length){
-    pie="<b>Sin datos / sin estructura:</b> "+SIN_DATOS.map(function(s){
+    pie+="<b>Sin datos / sin estructura:</b> "+SIN_DATOS.map(function(s){
       return '<span class="chipf" style="cursor:default">'+s+'</span>';}).join(" ");
   }
   document.getElementById("pie").innerHTML=pie;
 }
 
 cargarPrefs();
+barraBTC();
 escanear();
-setInterval(function(){ if(!escaneando)escanear(); }, AUTO_MIN*60*1000);
+setInterval(function(){ if(!escaneando)escanear(); barraBTC(); }, AUTO_MIN*60*1000);
 </script>
 </body>
 </html>
