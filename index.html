@@ -210,9 +210,17 @@ var SFP_CFG = { SWING_LOOKBACK:20, K_SWINGS:10, CONFIRM_BARS:3, COOLDOWN_BARS:10
   MAX_DEPTH_PCT:0.02, TREND_FILTER:true, TREND_MA:50, TREND_SLOPE:10 };
 
 // ============================ DATOS ============================
-async function jget(url){
-  try{ var r = await fetch(url); if(!r.ok) return null; return await r.json(); }
-  catch(e){ return null; }
+async function jget(url, reint){
+  reint = reint===undefined ? 2 : reint;
+  for(var i=0;i<=reint;i++){
+    try{
+      var r = await fetch(url);
+      if(r.ok) return await r.json();
+      if(r.status===400||r.status===404) return null;  // simbolo inexistente: no reintentar
+    }catch(e){}
+    if(i<reint) await new Promise(function(res){ setTimeout(res, 700*(i+1)); });
+  }
+  return null;
 }
 function intervaloBinance(v){ return v==="D" ? "1d" : (v>=60 ? (v/60)+"h" : v+"m"); }
 async function klinesBinance(sym, tf, n){
@@ -553,6 +561,7 @@ function emaUlt(closes,len){
   var serie=emaSerie(closes,len);
   return serie[serie.length-1];
 }
+var BTC_CACHE={};
 async function barraBTC(){
   var defs=[
     {tf:"240", lbl:"H4",  tipo:"SMA", r:50, l:200},
@@ -560,15 +569,18 @@ async function barraBTC(){
     {tf:"15",  lbl:"M15", tipo:"EMA", r:9,  l:21}
   ];
   var chips=await Promise.all(defs.map(async function(d){
-    var datos=await klinesBinance("BTCUSDT", d.tf, 260);
-    if(!datos)return '<span class="btcchip">'+d.lbl+' <small>sin datos</small></span>';
+    var sinDatos=BTC_CACHE[d.lbl]||('<span class="btcchip">'+d.lbl+' <small>sin datos</small></span>');
+    var datos=await obtenerVelas("BTCUSDT", d.tf, 260);   // Binance -> Bybit
+    if(!datos)return sinDatos;
     var closes=datos.velas.map(function(v){return v.c;});
     var rapida=d.tipo==="SMA"?smaUlt(closes,d.r):emaUlt(closes,d.r);
     var lenta =d.tipo==="SMA"?smaUlt(closes,d.l):emaUlt(closes,d.l);
-    if(isNaN(rapida)||isNaN(lenta))return '<span class="btcchip">'+d.lbl+' <small>sin datos</small></span>';
+    if(isNaN(rapida)||isNaN(lenta))return sinDatos;
     var up=rapida>lenta;
-    return '<span class="btcchip '+(up?"up":"down")+'">'+d.lbl+' '+(up?"&#9650;":"&#9660;")
+    var chip='<span class="btcchip '+(up?"up":"down")+'">'+d.lbl+' '+(up?"&#9650;":"&#9660;")
          +' <small>'+d.tipo+d.r+'/'+d.l+'</small></span>';
+    BTC_CACHE[d.lbl]=chip;
+    return chip;
   }));
   document.getElementById("btcBar").innerHTML='<span class="btclbl">BTC:</span>'+chips.join("");
 }
