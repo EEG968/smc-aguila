@@ -83,7 +83,9 @@
   .setup.EMALONG { background:rgba(88,166,255,.15); color:var(--azul); }
   .setup.EMASHORT { background:rgba(188,140,255,.15); color:var(--morado); }
   .setup.WATCH { background:rgba(210,153,34,.15); color:var(--ambar); }
+  .setup.VOLSPIKE { background:rgba(240,136,62,.22); color:#f0883e; }
   .setup.NONE { color:var(--gris); }
+  .volspk { color:#f0883e; font-weight:700; }
   .zona { padding:2px 9px; border-radius:20px; font-size:10px; font-weight:700; }
   .zona.PREMIUM { background:rgba(248,81,73,.15); color:var(--rojo); }
   .zona.DISCOUNT { background:rgba(63,185,80,.15); color:var(--verde); }
@@ -153,7 +155,7 @@
 
   <div class="main">
     <h1><span class="aguila">&#129413;</span> Aguila — SMC + SWEEP</h1>
-    <div class="sub" id="subTit">Estructura SMC + barrido de liquidez (SFP) + cruce EMA3/9 + Score 0-5. Equilibrium excluido. No es asesoramiento financiero.</div>
+    <div class="sub" id="subTit">Estructura SMC + barrido (SFP) + cruce EMA3/9 + Vol Spike (&ge;3x) + Score 0-5. Equilibrium excluido. No es asesoramiento financiero.</div>
 
     <div class="ctxbar" id="ctxBar"><span class="ctxlbl">Contexto:</span><span class="ctxchip">cargando...</span></div>
 
@@ -162,6 +164,7 @@
       <div class="card"><div class="t"><span class="punto" style="background:var(--rojo)"></span>A+ Short</div><div class="v" id="nApshort">-</div></div>
       <div class="card"><div class="t"><span class="punto" style="background:var(--azul)"></span>SMC+EMA</div><div class="v" id="nEma">-</div></div>
       <div class="card"><div class="t"><span class="punto" style="background:var(--ambar)"></span>Watch</div><div class="v" id="nWatch">-</div></div>
+      <div class="card"><div class="t"><span class="punto" style="background:#f0883e"></span>&#9889; Vol Spike</div><div class="v" id="nVol">-</div></div>
       <div class="card"><div class="t">&#128202; En Discount</div><div class="v" id="nDisc">-</div></div>
       <div class="card"><div class="t">Escaneados</div><div class="v" id="nTotal">-</div></div>
     </div>
@@ -247,6 +250,7 @@ var STABLES={USDCUSDT:1,FDUSDUSDT:1,TUSDUSDT:1,BUSDUSDT:1,DAIUSDT:1,USDPUSDT:1,E
 var SFP_CFG={ SWING_LOOKBACK:20, K_SWINGS:10, CONFIRM_BARS:3, COOLDOWN_BARS:10,
   APPROACH_THRESHOLD:0.003, VOLUME_MULTIPLIER:1.5, MIN_DEPTH_PCT:0.001,
   MAX_DEPTH_PCT:0.02, TREND_FILTER:true, TREND_MA:50, TREND_SLOPE:10 };
+var VOL_LOOKBACK=20, VOL_MULT=3, VOL_RANGO_MIN=1.5;  // volume spike: vol>=3x media, rango>=1.5x, cuerpo>=50%
 var LB_TYPE={"15":"minute15","30":"minute30","60":"hour1","240":"hour4","D":"day1"};
 var LB_SEC={"15":900,"30":1800,"60":3600,"240":14400,"D":86400};
 
@@ -511,10 +515,39 @@ function cruceEMA(velas){
   return {lado:lado,cruceHace:hace};
 }
 
+// ============================ VOLUME SPIKE ============================
+function detectarVolSpike(velas){
+  var n=velas.length;
+  if(n<VOL_LOOKBACK+2) return null;
+  var last=velas[n-1], sv=0, sr=0;
+  for(var i=n-1-VOL_LOOKBACK;i<n-1;i++){ sv+=velas[i].v; sr+=(velas[i].h-velas[i].l); }
+  var mediaV=sv/VOL_LOOKBACK, mediaR=sr/VOL_LOOKBACK;
+  if(!mediaV) return null;
+  var volX=last.v/mediaV;
+  var rango=last.h-last.l, rangoX=mediaR?rango/mediaR:0;
+  var cuerpo=rango>0?Math.abs(last.c-last.o)/rango:0;
+  var spike = volX>=VOL_MULT && rangoX>=VOL_RANGO_MIN && cuerpo>=0.5;
+  return {volX:volX,rangoX:rangoX,cuerpo:cuerpo,spike:spike,
+    dir:last.c>=last.o?"UP":"DOWN",cambio:(last.c-last.o)/last.o*100};
+}
+
 // ============================ ANALISIS ============================
 function analizarActivo(sym,datos,vols){
   var velas=datos.velas, smc=analizarSMC(velas);
-  if(!smc)return {sym:sym,neutral:true};
+  var vs=detectarVolSpike(velas);
+  if(!smc){
+    if(vs&&vs.spike){
+      var tS=_trendSFP(velas,velas.length-1), emaS=cruceEMA(velas);
+      return {sym:sym,fuente:datos.fuente,vol24h:vols[sym]||0,
+        setup:"VOL SPIKE "+vs.dir,setupCls:"VOLSPIKE",score:Math.min(5,Math.round(vs.volX)),
+        lado:vs.dir==="UP"?"LONG":"SHORT",precio:velas[velas.length-1].c,zona:"-",pct:null,
+        bias:"-",sfp:"-",conf:"-",volx:null,depth:null,nivel:null,
+        tendencia:tS==="UP"?"ALCISTA":(tS==="DOWN"?"BAJISTA":"NEUTRAL"),
+        ema:emaS.lado?emaS.lado:"-",emaCls:emaS.lado==="ALCISTA"?"alcista":(emaS.lado==="BAJISTA"?"bajista":""),
+        volSpike:vs};
+    }
+    return {sym:sym,neutral:true};
+  }
   var sw=detectSwings(velas), evs=detectSweeps(velas,sw.highs,sw.lows);
   var evB=null,evS=null;
   evs.forEach(function(e){
@@ -536,6 +569,7 @@ function analizarActivo(sym,datos,vols){
   else if(smc.bias===1&&smc.zona==="DISCOUNT"&&crAl){setup="SMC+EMA LONG";setupCls="EMALONG";lado="LONG";score=scoreL;}
   else if(smc.bias===-1&&smc.zona==="PREMIUM"&&crBa){setup="SMC+EMA SHORT";setupCls="EMASHORT";lado="SHORT";score=scoreS;}
   else if(evB||evS||score>=3){setup="WATCH";setupCls="WATCH";}
+  if(vs&&vs.spike&&(setupCls==="NONE"||setupCls==="WATCH")){ setup="VOL SPIKE "+vs.dir; setupCls="VOLSPIKE"; }
   var ev=lado==="LONG"?(evB||evS):(evS||evB);
   return {sym:sym,fuente:datos.fuente,vol24h:vols[sym]||0,setup:setup,setupCls:setupCls,score:score,lado:lado,
     precio:smc.precio,zona:smc.zona,pct:smc.pct,
@@ -545,7 +579,7 @@ function analizarActivo(sym,datos,vols){
     depth:ev&&ev.sweep_depth_pct!==null?ev.sweep_depth_pct:null,
     nivel:ev?ev.swing_level:null,tendencia:trend,
     ema:ema.lado?(ema.lado+(ema.cruceHace!==null?" (cruce "+ema.cruceHace+"v)":"")):"-",
-    emaCls:ema.lado==="ALCISTA"?"alcista":(ema.lado==="BAJISTA"?"bajista":"")};
+    emaCls:ema.lado==="ALCISTA"?"alcista":(ema.lado==="BAJISTA"?"bajista":""),volSpike:vs};
 }
 
 // ============================ SEMAFORO CONTEXTO ============================
@@ -588,7 +622,7 @@ async function barraContexto(){
 
 // ============================ UI ============================
 var MERCADO="CRIPTO", RESULTADOS=[], SIN_DATOS=[], escaneando=false;
-var PRIORIDAD={APLONG:0,APSHORT:1,EMALONG:2,EMASHORT:3,WATCH:4,NONE:5};
+var PRIORIDAD={APLONG:0,APSHORT:1,VOLSPIKE:2,EMALONG:3,EMASHORT:4,WATCH:5,NONE:6};
 
 function prefs(){ try{ return JSON.parse(localStorage.getItem("aguila_prefs")||"{}"); }catch(e){ return {}; } }
 function guardarPrefs(){ try{ localStorage.setItem("aguila_prefs", JSON.stringify({
@@ -683,40 +717,46 @@ function render(){
   var solo=document.getElementById("fSolo").classList.contains("on");
   var zonas={}; document.querySelectorAll(".chipf").forEach(function(c){ if(c.classList.contains("on"))zonas[c.dataset.z]=1; });
   var minScore=+val("fScore"), q=val("fbuscar").trim().toUpperCase();
-  var VIS=RESULTADOS.filter(function(r){ return r.zona!=="EQUILIBRIUM"; });
+  // Equilibrium excluido salvo que sea VOL SPIKE (evento independiente de estructura)
+  var VIS=RESULTADOS.filter(function(r){ return r.zona!=="EQUILIBRIUM"||r.setupCls==="VOLSPIKE"; });
   var nEq=RESULTADOS.length-VIS.length;
-  var nAL=0,nAS=0,nEma=0,nW=0,nD=0;
+  var nAL=0,nAS=0,nEma=0,nW=0,nD=0,nVol=0;
   VIS.forEach(function(r){
     if(r.setupCls==="APLONG")nAL++; else if(r.setupCls==="APSHORT")nAS++;
     else if(r.setupCls==="EMALONG"||r.setupCls==="EMASHORT")nEma++; else if(r.setupCls==="WATCH")nW++;
+    if(r.volSpike&&r.volSpike.spike)nVol++;
     if(r.zona==="DISCOUNT")nD++;
   });
   document.getElementById("nAplong").textContent=nAL; document.getElementById("nApshort").textContent=nAS;
   document.getElementById("nEma").textContent=nEma; document.getElementById("nWatch").textContent=nW;
+  document.getElementById("nVol").textContent=nVol;
   document.getElementById("nDisc").textContent=nD; document.getElementById("nTotal").textContent=RESULTADOS.length+SIN_DATOS.length;
   var filas=VIS.filter(function(r){
     if(solo&&r.setupCls==="NONE")return false;
-    if(!zonas[r.zona])return false;
+    if(r.setupCls!=="VOLSPIKE" && !zonas[r.zona])return false;  // VOL SPIKE no se filtra por zona
     if(r.score<minScore)return false;
     if(q&&r.sym.indexOf(q)===-1)return false;
     return true;
   }).sort(function(a,b){
     if(PRIORIDAD[a.setupCls]!==PRIORIDAD[b.setupCls])return PRIORIDAD[a.setupCls]-PRIORIDAD[b.setupCls];
     if(b.score!==a.score)return b.score-a.score;
-    return Math.abs(a.pct-50)>Math.abs(b.pct-50)?-1:1;
+    var pa=a.pct===null?50:a.pct, pb=b.pct===null?50:b.pct;
+    return Math.abs(pa-50)>Math.abs(pb-50)?-1:1;
   });
   var esAcc=MERCADO==="ACCIONES";
   var el=document.getElementById("tabla");
   if(!filas.length){ el.innerHTML='<div class="vacio">Sin resultados con los filtros actuales.</div>'; }
   else{
-    var h='<table><tr><th>'+(esAcc?"Ticker":"Activo")+'</th><th>Setup</th><th>Score</th><th>Precio</th><th>Zona</th><th>Pos%</th><th>Bias</th><th>SFP</th><th>Conf</th><th>VolX</th><th>Depth%</th><th>NivelBarrido</th><th>EMA 3/9</th><th>Tend. MA50</th><th>Vol 24h</th><th>Fuente</th></tr>';
+    var h='<table><tr><th>'+(esAcc?"Ticker":"Activo")+'</th><th>Setup</th><th>Score</th><th>Precio</th><th>Zona</th><th>Pos%</th><th>Vol&#9889;</th><th>Bias</th><th>SFP</th><th>Conf</th><th>VolX</th><th>Depth%</th><th>NivelBarrido</th><th>EMA 3/9</th><th>Tend. MA50</th><th>Vol 24h</th><th>Fuente</th></tr>';
     filas.forEach(function(f){
+      var vsp = f.volSpike ? ('<span class="'+(f.volSpike.spike?"volspk":"dim")+'">'+f.volSpike.volX.toFixed(1)+'x'+(f.volSpike.spike?(f.volSpike.dir==="UP"?" &#9650;":" &#9660;"):"")+'</span>') : '<span class="dim">-</span>';
       h+='<tr><td class="sym">'+f.sym+(esAcc&&ACC_NOMBRE[f.sym]?'<span class="nom">'+ACC_NOMBRE[f.sym]+'</span>':'')+'</td>'
         +'<td><span class="setup '+f.setupCls+'">'+f.setup+'</span></td>'
         +'<td><b>'+f.score+'</b></td>'
         +'<td>'+fmtP(f.precio)+'</td>'
-        +'<td><span class="zona '+f.zona+'">'+f.zona+'</span></td>'
-        +'<td><span class="barra"><span class="marca" style="left:calc('+f.pct.toFixed(1)+'% - 2px)"></span></span>'+f.pct.toFixed(1)+'%</td>'
+        +'<td>'+(f.zona==="-"?'<span class="dim">-</span>':'<span class="zona '+f.zona+'">'+f.zona+'</span>')+'</td>'
+        +'<td>'+(f.pct===null?'<span class="dim">-</span>':'<span class="barra"><span class="marca" style="left:calc('+f.pct.toFixed(1)+'% - 2px)"></span></span>'+f.pct.toFixed(1)+'%')+'</td>'
+        +'<td>'+vsp+'</td>'
         +'<td class="'+(f.bias==="ALCISTA"?"alcista":(f.bias==="BAJISTA"?"bajista":"dim"))+'">'+f.bias+'</td>'
         +'<td class="'+(f.sfp==="SWEEP_CONFIRMED"?"":"dim")+'">'+f.sfp+'</td>'
         +'<td class="conf-'+f.conf+'">'+f.conf+'</td>'
