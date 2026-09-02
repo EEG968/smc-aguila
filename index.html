@@ -495,8 +495,13 @@ async function barraContexto(){
 
 // ============================ SONIDO ============================
 var SONIDO=true, ACtx=null;
+function desbloquearAudio(){
+  try{ if(!ACtx) ACtx=new (window.AudioContext||window.webkitAudioContext)();
+    if(ACtx.state==="suspended") ACtx.resume(); }catch(e){}
+}
 function toggleSonido(){ SONIDO=!SONIDO; document.getElementById("tSonido").classList.toggle("on",SONIDO);
-  if(SONIDO && !ACtx){ try{ ACtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } guardarPrefs(); }
+  if(SONIDO){ desbloquearAudio(); alertaPullback(); }  // beep de prueba al activar
+  guardarPrefs(); }
 function beep(freq, dur){
   if(!SONIDO) return;
   try{ if(!ACtx) ACtx=new (window.AudioContext||window.webkitAudioContext)();
@@ -569,6 +574,7 @@ function listaActivos(){
 }
 async function escanear(){
   if(escaneando) return; escaneando=true; guardarPrefs();
+  if(SONIDO) desbloquearAudio();   // el clic en Escanear desbloquea el audio del navegador
   var btn=document.getElementById("btn"); btn.disabled=true;
   var linea=document.getElementById("estadoLinea"); linea.textContent="Descargando datos...";
   var tf=val("cIntervalo"), nv=+val("cVelas");
