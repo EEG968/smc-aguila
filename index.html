@@ -74,7 +74,13 @@
   .tipo { font-size:10px; padding:1px 6px; border-radius:4px; background:#21262d; color:var(--gris); }
   .tipo.FVG { color:var(--azul); }
   .tipo.OB { color:var(--morado); }
-  .ok { color:var(--verde); } .no { color:var(--rojo); } .dim { color:var(--gris); }
+  .ok { color:var(--verde); } .no { color:var(--rojo); } .dim { color:var(--gris); } .amb { color:var(--ambar); }
+  .sect { margin:20px 0 10px; font-size:14px; font-weight:700; display:flex; align-items:baseline; gap:10px; }
+  .sect small { font-weight:400; color:var(--gris); font-size:12px; }
+  .des { padding:2px 9px; border-radius:20px; font-size:10px; font-weight:700; }
+  .des.reentrada { background:rgba(63,185,80,.15); color:var(--verde); }
+  .des.invalidado { background:rgba(248,81,73,.15); color:var(--rojo); }
+  .des.sin_pullback { background:rgba(210,153,34,.15); color:var(--ambar); }
   .volspk { color:var(--naranja); font-weight:700; }
   .alcista { color:var(--verde); } .bajista { color:var(--rojo); }
   .pie { color:var(--gris); font-size:12px; margin-top:10px; line-height:1.7; }
@@ -144,6 +150,9 @@
 
     <div class="tabla-wrap" id="tabla"><div class="vacio">Sin datos todav&iacute;a.</div></div>
     <div class="pie" id="pie"></div>
+
+    <div class="sect"><span>&#128220; Historial de spikes</span><small>&uacute;ltimas 100 velas &middot; qu&eacute; pas&oacute; despu&eacute;s del pico</small></div>
+    <div class="tabla-wrap" id="histTabla"><div class="vacio">&mdash;</div></div>
   </div>
 </div>
 
@@ -196,6 +205,7 @@ var VOL_LOOKBACK=20, VOL_MULT=3, VOL_RANGO_MIN=1.5;
 var SPIKE_WINDOW=15;   // velas hacia atras para buscar el spike vigente
 var SPIKE_ACTIVO=2;    // spike a <=2 velas = fase impulso "en curso"
 var OB_BUSQUEDA=10;    // velas atras para el order block de origen
+var HIST_WINDOW=100;   // ventana del historial de spikes (velas)
 var LB_TYPE={"15":"minute15","30":"minute30","60":"hour1","240":"hour4","D":"day1"};
 var LB_SEC={"15":900,"30":1800,"60":3600,"240":14400,"D":86400};
 
@@ -425,11 +435,32 @@ function analizarActivo(sym,datos,vols){
   // score de calidad 0-5: spike fuerte, zona FVG, SFP confirmado, EMA a favor, tendencia a favor
   var score = (sp.volX>=5?1:0) + (zona.tipo==="FVG"?1:0) + (sfp==="CONFIRMED"?1:0) + (emaOK?1:0) + (tendOK?1:0);
 
-  return {sym:sym, fuente:datos.fuente, vol24h:vols[sym]||0, fase:fase, dir:lado,
+  return {sym:sym, fuente:datos.fuente, vol24h:vols[sym]||0, fase:fase, dir:lado, spikeIdx:sp.idx,
     precio:precio, volX:sp.volX, spikeHace:hace, zonaTipo:zona.tipo,
     zTop:zona.top, zBot:zona.bottom, dist:dist, vigente:!vig.tocada, tocada:vig.tocada,
     sfp:sfp, ema:ema.lado?(ema.lado+(ema.cruceHace!==null?" ("+ema.cruceHace+"v)":"")):"-", emaOK:emaOK,
     tend:tend, score:score };
+}
+
+// ============================ HISTORIAL DE SPIKES ============================
+// Todos los spikes de las ultimas HIST_WINDOW velas (excepto el activo del main),
+// con su desenlace: reentrada dada / invalidado / sin pullback (se fue sin volver).
+function spikesHistoricos(velas, sym, excludeIdx){
+  var n=velas.length, out=[], lo=Math.max(VOL_LOOKBACK, n-1-HIST_WINDOW);
+  for(var i=n-1;i>=lo;i--){
+    var e=esSpike(velas,i);
+    if(!e){ continue; }
+    if(i===excludeIdx){ i-=2; continue; }
+    var dir=e.dir, fvg=fvgDeSpike(velas,i,dir), ob=obDeSpike(velas,i,dir), zona=fvg||ob;
+    if(!zona){ continue; }
+    var creaIdx = zona.tipo==="FVG" ? i+1 : i;
+    var vig=vigenciaZona(velas, zona, creaIdx, dir);
+    var des = vig.rota ? "invalidado" : (vig.tocada ? "reentrada" : "sin_pullback");
+    out.push({sym:sym, dir:dir==="UP"?"LONG":"SHORT", volX:e.volX, zBot:zona.bottom, zTop:zona.top,
+      tipo:zona.tipo, hace:(n-1)-i, desenlace:des, tVela:velas[i].t});
+    i-=2;  // saltar las velas del propio impulso para no duplicar el evento
+  }
+  return out;
 }
 
 // ============================ CONTEXTO ============================
@@ -481,7 +512,7 @@ function alertaPullback(){ beep(880,0.18); setTimeout(function(){beep(1180,0.22)
 function alertaSpike(){ beep(520,0.16); }                                                   // tono grave corto
 
 // ============================ UI ============================
-var MERCADO="CRIPTO", RESULTADOS=[], SIN_DATOS=[], escaneando=false, TOP_CACHE=[];
+var MERCADO="CRIPTO", RESULTADOS=[], HISTORIAL=[], SIN_DATOS=[], ESCANEADOS=0, escaneando=false, TOP_CACHE=[];
 var PREV={};  // estado anterior por sym para detectar novedades (sonido)
 var ORDEN={PULLBACK:0, SPIKE:1, ESPERANDO:2};
 
@@ -543,15 +574,23 @@ async function escanear(){
   var tf=val("cIntervalo"), nv=+val("cVelas");
   var tk=await tickers24h(); TOP_CACHE=tk.top;
   var activos=listaActivos(), conc=MERCADO==="ACCIONES"?5:CONCURRENCIA;
-  var res=[], sind=[], idx=0, hechos=0;
+  var res=[], sind=[], hist=[], idx=0, hechos=0;
   async function trab(){
     while(idx<activos.length){ var sym=activos[idx++]; var datos=await obtenerVelas(sym,tf,nv);
-      if(!datos) sind.push(sym); else res.push(analizarActivo(sym,datos,tk.vols));
+      if(!datos){ sind.push(sym); }
+      else {
+        var r=analizarActivo(sym,datos,tk.vols);
+        if(!r.neutral) res.push(r);
+        var hs=spikesHistoricos(datos.velas, sym, r.neutral?null:r.spikeIdx);
+        for(var z=0;z<hs.length;z++) hist.push(hs[z]);
+      }
       hechos++; linea.textContent="Escaneando "+hechos+"/"+activos.length+" ..."; }
   }
   var ws=[]; for(var k=0;k<conc;k++)ws.push(trab()); await Promise.all(ws);
-  RESULTADOS=res.filter(function(r){return !r.neutral;});
-  SIN_DATOS=sind.concat(res.filter(function(r){return r.neutral;}).map(function(r){return r.sym;}));
+  RESULTADOS=res;
+  hist.sort(function(a,b){ return b.tVela-a.tVela; });
+  HISTORIAL=hist.slice(0,60);
+  SIN_DATOS=sind; ESCANEADOS=activos.length;
   detectarNovedades();
   linea.innerHTML="<b>"+(MERCADO==="ACCIONES"?"Acciones USA":"Cripto")+"</b> &middot; "
     +document.getElementById("cUniverso").selectedOptions[0].text+" &middot; "
@@ -580,7 +619,7 @@ function render(){
   var nPull=0,nSpike=0,nWait=0;
   RESULTADOS.forEach(function(r){ if(r.fase==="PULLBACK")nPull++; else if(r.fase==="SPIKE")nSpike++; else if(r.fase==="ESPERANDO")nWait++; });
   document.getElementById("nPull").textContent=nPull; document.getElementById("nSpike").textContent=nSpike;
-  document.getElementById("nWait").textContent=nWait; document.getElementById("nTotal").textContent=RESULTADOS.length+SIN_DATOS.length;
+  document.getElementById("nWait").textContent=nWait; document.getElementById("nTotal").textContent=ESCANEADOS||(RESULTADOS.length+SIN_DATOS.length);
   var filas=RESULTADOS.filter(function(r){
     if(!fases[r.fase]) return false;
     if(!dirs[r.dir]) return false;
@@ -615,7 +654,30 @@ function render(){
     el.innerHTML=h+'</table>';
   }
   document.getElementById("pie").innerHTML = SIN_DATOS.length
-    ? "<b>Sin ciclo activo / sin datos:</b> "+SIN_DATOS.length+" activos" : "";
+    ? "<b>Sin datos de velas:</b> "+SIN_DATOS.length+" activos" : "";
+
+  // ---- Historial de spikes ----
+  var hf=HISTORIAL.filter(function(r){
+    if(!dirs[r.dir]) return false;
+    if(q && r.sym.indexOf(q)===-1) return false;
+    return true;
+  });
+  var desTxt={reentrada:"reentrada dada", invalidado:"invalidado", sin_pullback:"sin pullback (se fue)"};
+  var hel=document.getElementById("histTabla");
+  if(!hf.length){ hel.innerHTML='<div class="vacio">Sin spikes en la ventana.</div>'; }
+  else{
+    var hh='<table><tr><th>'+(esAcc?"Ticker":"Activo")+'</th><th>Hace</th><th>Dir</th><th>Vol&#9889;</th><th>Zona</th><th>Tipo</th><th>Desenlace</th></tr>';
+    hf.forEach(function(f){
+      hh+='<tr><td class="sym">'+f.sym+(esAcc&&ACC_NOMBRE[f.sym]?'<span class="nom">'+ACC_NOMBRE[f.sym]+'</span>':'')+'</td>'
+        +'<td class="dim">'+f.hace+'v</td>'
+        +'<td class="dir '+f.dir+'">'+f.dir+(f.dir==="LONG"?" &#9650;":" &#9660;")+'</td>'
+        +'<td class="volspk">'+f.volX.toFixed(1)+'x</td>'
+        +'<td>'+fmtP(f.zBot)+' &ndash; '+fmtP(f.zTop)+'</td>'
+        +'<td><span class="tipo '+f.tipo+'">'+f.tipo+'</span></td>'
+        +'<td><span class="des '+f.desenlace+'">'+desTxt[f.desenlace]+'</span></td></tr>';
+    });
+    hel.innerHTML=hh+'</table>';
+  }
 }
 
 cargarPrefs();
